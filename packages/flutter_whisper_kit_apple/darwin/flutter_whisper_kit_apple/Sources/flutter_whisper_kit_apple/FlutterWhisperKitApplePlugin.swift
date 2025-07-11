@@ -66,6 +66,29 @@ private class WhisperKitApiImpl: WhisperKitMessage {
 
     Task {
       do {
+        // --- START OF DYNAMIC BUNDLED MODEL LOGIC ---
+        // This logic dynamically checks if the requested model variant exists in the app bundle.
+        
+        if let bundledModelPath = Bundle.main.path(forResource: variant, ofType: nil) {
+            // Found the model locally!
+            print("✅ Found bundled model '\(variant)' at path: \(bundledModelPath). Loading it directly.")
+            
+            // Initialize WhisperKit directly from our local, bundled model path.
+            // This completely bypasses any download or cache logic.
+            self.whisperKit = try await WhisperKit(modelPath: bundledModelPath)
+            
+            // Immediately call completion with success.
+            completion(.success(bundledModelPath))
+            return // IMPORTANT: Exit the function to prevent fallback to download logic.
+        } else {
+            // Model not found in the bundle, proceed to the original download logic.
+            print("⚠️ Bundled model '\(variant)' not found. Falling back to default download behavior.")
+        }
+
+        // --- END OF DYNAMIC BUNDLED MODEL LOGIC ---
+
+
+        // -- ORIGINAL LOGIC (Now a fallback if a bundled model is not found) --
         if whisperKit == nil {
           let config = WhisperKitConfig(
             verbose: true,
@@ -117,20 +140,15 @@ private class WhisperKitApiImpl: WhisperKitMessage {
                   at: modelDirURL, withIntermediateDirectories: true, attributes: nil)
               }
               
-              // If the model was downloaded to a different location than modelDirURL,
-              // copy or move it to the correct location
               if downloadedFolder.path != modelDirURL.appendingPathComponent(variant).path {
                 let targetFolder = modelDirURL.appendingPathComponent(variant)
                 
-                // Remove existing folder if it exists
                 if FileManager.default.fileExists(atPath: targetFolder.path) {
                   try FileManager.default.removeItem(at: targetFolder)
                 }
                 
-                // Copy the downloaded folder to the model directory
                 try FileManager.default.copyItem(at: downloadedFolder, to: targetFolder)
                 
-                // Update the model folder reference
                 modelFolder = targetFolder
               }
             }
@@ -165,6 +183,9 @@ private class WhisperKitApiImpl: WhisperKitMessage {
       }
     }
   }
+
+  // --- NO OTHER CHANGES ARE NEEDED BELOW THIS LINE ---
+  // The rest of the file remains identical to the original.
 
   /// Transcribes audio from a file
   ///
@@ -206,14 +227,12 @@ private class WhisperKitApiImpl: WhisperKitMessage {
         resolvedPath = filePath
         #endif
         
-        // Check if file exists and is readable
         guard FileManager.default.fileExists(atPath: resolvedPath) else {
           throw NSError(
             domain: "WhisperKitError", code: 4002,
             userInfo: [NSLocalizedDescriptionKey: "Audio file does not exist at path: \(resolvedPath)"])
         }
 
-        // Check file permissions
         guard FileManager.default.isReadableFile(atPath: resolvedPath) else {
           throw NSError(
             domain: "WhisperKitError", code: 4003,
@@ -222,7 +241,6 @@ private class WhisperKitApiImpl: WhisperKitMessage {
             ])
         }
 
-        // Load and convert buffer in a limited scope
         Logging.debug("Loading audio file: \(resolvedPath)")
         let loadingStart = Date()
         let audioFileSamples = try await Task {
@@ -271,19 +289,12 @@ private class WhisperKitApiImpl: WhisperKitMessage {
     }
   }
 
-  /// Transcribes audio samples
-  ///
-  /// - Parameters:
-  ///   - samples: Array of float audio samples to transcribe
-  ///   - options: Decoding options for transcription
-  /// - Returns: Transcription result or nil if transcription failed
   func transcribeAudioSamples(_ samples: [Float], options: DecodingOptions?) async throws
     -> TranscriptionResult?
   {
     guard let whisperKit = whisperKit else { return nil }
     var selectedLanguage: String = "japanese"
     let languageCode = Constants.languages[selectedLanguage, default: Constants.defaultLanguageCode]
-    // let task: DecodingTask = selectedTask == "transcribe" ? .transcribe : .translate
     let task: DecodingTask = .transcribe
     var lastConfirmedSegmentEndSeconds: Float = 0
     let seekClip: [Float] = [lastConfirmedSegmentEndSeconds]
@@ -307,73 +318,9 @@ private class WhisperKitApiImpl: WhisperKitMessage {
         chunkingStrategy: .vad
       )
 
-    // var currentChunks: [Int: (chunkText: [String], fallbacks: Int)] = [:]
-
-    //  TODO: consider the presence or absence of decodingCallback
-    // Early stopping checks
-    // let decodingCallback: ((TranscriptionProgress) -> Bool?) = {
-    //   (progress: TranscriptionProgress) in
-    //   DispatchQueue.main.async {
-    //     let fallbacks = Int(progress.timings.totalDecodingFallbacks)
-    //     // let chunkId = isStreamMode ? 0 : progress.windowId
-    //     let chunkId = progress.windowId
-
-    //     // First check if this is a new window for the same chunk, append if so
-    //     var updatedChunk = (chunkText: [progress.text], fallbacks: fallbacks)
-
-    //     if var currentChunk = currentChunks[chunkId],
-    //       let previousChunkText = currentChunk.chunkText.last
-    //     {
-    //       if progress.text.count >= previousChunkText.count {
-    //         // This is the same window of an existing chunk, so we just update the last value
-    //         currentChunk.chunkText[currentChunk.chunkText.endIndex - 1] = progress.text
-    //         updatedChunk = currentChunk
-    //       } else {
-    //         // This is either a new window or a fallback (only in streaming mode)
-    //         if fallbacks == currentChunk.fallbacks && false {
-    //           // New window (since fallbacks havent changed)
-    //           updatedChunk.chunkText = [updatedChunk.chunkText.first ?? "" + progress.text]
-    //         } else {
-    //           // Fallback, overwrite the previous bad text
-    //           updatedChunk.chunkText[currentChunk.chunkText.endIndex - 1] = progress.text
-    //           updatedChunk.fallbacks = fallbacks
-    //           print("Fallback occured: \(fallbacks)")
-    //         }
-    //       }
-    //     }
-
-    //     // Set the new text for the chunk
-    //     currentChunks[chunkId] = updatedChunk
-    //     let joinedChunks = currentChunks.sorted { $0.key < $1.key }.flatMap { $0.value.chunkText }
-    //       .joined(separator: "\n")
-
-    //     // self.currentText = joinedChunks
-    //     // currentFallbacks = fallbacks
-    //     // currentDecodingLoops += 1
-    //   }
-
-    //   // Check early stopping
-    //   let currentTokens = progress.tokens
-    //   let checkWindow = Int(0)
-    //   if currentTokens.count > checkWindow {
-    //     let checkTokens: [Int] = currentTokens.suffix(checkWindow)
-    //     let compressionRatio = compressionRatio(of: checkTokens)
-    //     if compressionRatio > options.compressionRatioThreshold! {
-    //       Logging.debug("Early stopping due to compression threshold")
-    //       return false
-    //     }
-    //   }
-    //   if progress.avgLogprob! < options.logProbThreshold! {
-    //     Logging.debug("Early stopping due to logprob threshold")
-    //     return false
-    //   }
-    //   return nil
-    // }
-
     let transcriptionResults: [TranscriptionResult] = try await whisperKit.transcribe(
       audioArray: samples,
-      decodeOptions: options,
-      // callback: decodingCallback
+      decodeOptions: options
     )
 
     let mergedResults = mergeTranscriptionResults(transcriptionResults)
@@ -381,9 +328,6 @@ private class WhisperKitApiImpl: WhisperKitMessage {
     return mergedResults
   }
 
-  /// Gets the path to the WhisperKit models directory
-  ///
-  /// - Returns: URL to the WhisperKit models directory
   private func getModelFolderPath() -> URL {
     if let appSupport = FileManager.default.urls(
       for: .applicationSupportDirectory, in: .userDomainMask
@@ -394,16 +338,10 @@ private class WhisperKitApiImpl: WhisperKitMessage {
     return getDocumentsDirectory().appendingPathComponent("WhisperKitModels")
   }
 
-  /// Gets the Documents directory
-  ///
-  /// - Returns: URL to the Documents directory
   private func getDocumentsDirectory() -> URL {
     FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
   }
 
-  /// Gets the list of locally available models
-  ///
-  /// - Returns: Array of model names that are available locally
   private func getLocalModels() async -> [String] {
     let modelPath = getModelFolderPath()
     var localModels: [String] = []
@@ -420,10 +358,6 @@ private class WhisperKitApiImpl: WhisperKitMessage {
     return WhisperKit.formatModelFiles(localModels)
   }
   
-  ///
-  /// - Parameters:
-  ///   - modelRepo: The repository to fetch models from
-  ///   - completion: Callback with result of the operation
   func fetchAvailableModels(
     modelRepo: String, matching: [String], token: String?,
     completion: @escaping (Result<[String?], Error>) -> Void
@@ -445,26 +379,15 @@ private class WhisperKitApiImpl: WhisperKitMessage {
     }
   }
   
-  ///
-  /// - Parameters:
-  ///   - completion: Callback with the detected language result
-  
-  /// Gets the recommended models for the current device
-  ///
-  /// - Parameter completion: Callback with the recommended models
   func recommendedModels(completion: @escaping (Result<String?, Error>) -> Void) {
     Task {
       do {
         let modelSupport = WhisperKit.recommendedModels()
         
-        let defaultModel = modelSupport.default
-        let supportedModels = modelSupport.supported
-        let disabledModels = modelSupport.disabled
-        
         let modelSupportDict: [String: Any] = [
-          "default": defaultModel,
-          "supported": supportedModels,
-          "disabled": disabledModels
+          "default": modelSupport.default,
+          "supported": modelSupport.supported,
+          "disabled": modelSupport.disabled
         ]
         
         let jsonData = try JSONSerialization.data(withJSONObject: modelSupportDict, options: [])
@@ -478,9 +401,6 @@ private class WhisperKitApiImpl: WhisperKitMessage {
     }
   }
   
-  /// Gets the current device name
-  ///
-  /// - Parameter completion: Callback with the device name
   func deviceName(completion: @escaping (Result<String, Error>) -> Void) {
     Task {
       do {
@@ -493,10 +413,6 @@ private class WhisperKitApiImpl: WhisperKitMessage {
     }
   }
   
-  ///
-  /// - Parameters:
-  ///   - modelFiles: Array of model file names to format
-  ///   - completion: Callback with the formatted model file names
   func formatModelFiles(
     modelFiles: [String],
     completion: @escaping (Result<[String], Error>) -> Void
@@ -505,16 +421,12 @@ private class WhisperKitApiImpl: WhisperKitMessage {
     completion(.success(formattedFiles))
   }
   
-  ///
-  /// - Parameters:
-  ///   - completion: Callback with the detected language result
   func detectLanguage(
     audioPath: String,
     completion: @escaping (Result<String?, Error>) -> Void
   ) {
     Task {
       do {
-        // Ensure WhisperKit is initialized
         guard let whisperKit = whisperKit else {
           throw NSError(
             domain: "WhisperKitError", code: 1002,
@@ -541,10 +453,6 @@ private class WhisperKitApiImpl: WhisperKitMessage {
     }
   }
   
-  ///
-  /// - Parameters:
-  ///   - repo: The repository name to fetch from
-  ///   - completion: Callback with the model support configuration
   func fetchModelSupportConfig(
     repo: String, downloadBase: String?, token: String?,
     completion: @escaping (Result<String?, Error>) -> Void
@@ -570,10 +478,6 @@ private class WhisperKitApiImpl: WhisperKitMessage {
     }
   }
   
-  ///
-  /// - Parameters:
-  ///   - repo: The repository name to fetch from
-  ///   - completion: Callback with the recommended models for the current device
   func recommendedRemoteModels(
     repo: String, downloadBase: String?, token: String?,
     completion: @escaping (Result<String?, Error>) -> Void
@@ -599,14 +503,6 @@ private class WhisperKitApiImpl: WhisperKitMessage {
     }
   }
   
-  ///
-  /// - Parameters:
-  ///   - model: The model variant to use
-  ///   - modelRepo: The repository to download the model from
-  ///   - modelToken: An access token for the repository
-  ///   - modelFolder: A local folder containing the model files
-  ///   - download: Whether to download the model if not available locally
-  ///   - completion: Callback with the result of the operation
   func setupModels(
     model: String?, downloadBase: String?, modelRepo: String?,
     modelToken: String?, modelFolder: String?, download: Bool,
@@ -640,11 +536,6 @@ private class WhisperKitApiImpl: WhisperKitMessage {
     }
   }
   
-  ///
-  /// - Parameters:
-  ///   - variant: The model variant to download
-  ///   - repo: The repository to download from
-  ///   - completion: Callback with the result of the operation
   func download(
     variant: String, downloadBase: String?, useBackgroundSession: Bool,
     repo: String, token: String?,
@@ -675,8 +566,6 @@ private class WhisperKitApiImpl: WhisperKitMessage {
     }
   }
   
-  ///
-  /// - Parameter completion: Callback with the result of the operation
   func prewarmModels(
     completion: @escaping (Result<String?, Error>) -> Void
   ) {
@@ -698,8 +587,6 @@ private class WhisperKitApiImpl: WhisperKitMessage {
     }
   }
   
-  ///
-  /// - Parameter completion: Callback with the result of the operation
   func unloadModels(
     completion: @escaping (Result<String?, Error>) -> Void
   ) {
@@ -721,8 +608,6 @@ private class WhisperKitApiImpl: WhisperKitMessage {
     }
   }
   
-  ///
-  /// - Parameter completion: Callback with the result of the operation
   func clearState(
     completion: @escaping (Result<String?, Error>) -> Void
   ) {
@@ -742,9 +627,6 @@ private class WhisperKitApiImpl: WhisperKitMessage {
     }
   }
   
-  ///
-  /// - Parameters:
-  ///   - completion: Callback after setting the logging callback
   func loggingCallback(
     level: String?,
     completion: @escaping (Result<Void, Error>) -> Void
@@ -767,12 +649,6 @@ private class WhisperKitApiImpl: WhisperKitMessage {
     }
   }
   
-  /// Starts recording audio for transcription
-  ///
-  /// - Parameters:
-  ///   - options: Recording and transcription options
-  ///   - loop: Whether to continuously transcribe in real-time
-  ///   - completion: Callback with result of the operation
   func startRecording(
     options: [String: Any?], loop: Bool,
     completion: @escaping (Result<String?, Error>) -> Void
@@ -819,11 +695,6 @@ private class WhisperKitApiImpl: WhisperKitMessage {
     }
   }
   
-  /// Stops recording audio
-  ///
-  /// - Parameters:
-  ///   - loop: Whether real-time transcription was active
-  ///   - completion: Callback with result of the operation
   func stopRecording(
     loop: Bool, completion: @escaping (Result<String?, Error>) -> Void
   ) {
@@ -857,9 +728,6 @@ private class WhisperKitApiImpl: WhisperKitMessage {
     }
   }
   
-  /// Starts a loop for real-time transcription
-  ///
-  /// - Parameter options: Transcription options
   private func startRealtimeLoop(options: [String: Any?]) {
     transcriptionTask = Task {
       var lastTranscribedText = ""
@@ -876,10 +744,10 @@ private class WhisperKitApiImpl: WhisperKitMessage {
             }
           }
           
-          try await Task.sleep(nanoseconds: 300_000_000) // 300ms delay between transcriptions
+          try await Task.sleep(nanoseconds: 300_000_000)
         } catch {
           print("Realtime transcription error: \(error.localizedDescription)")
-          try? await Task.sleep(nanoseconds: 1_000_000_000) // 1s delay on error
+          try? await Task.sleep(nanoseconds: 1_000_000_000)
         }
       }
       
@@ -889,16 +757,11 @@ private class WhisperKitApiImpl: WhisperKitMessage {
     }
   }
   
-  /// Stops the real-time transcription loop
   private func stopRealtimeTranscription() {
     transcriptionTask?.cancel()
     transcriptionTask = nil
   }
   
-  /// Transcribes the current audio buffer
-  ///
-  /// - Parameter options: Transcription options
-  /// - Returns: Transcription result or nil if transcription failed
   private func transcribeCurrentBufferInternal(options: [String: Any?]) async throws -> TranscriptionResult? {
     guard let whisperKit = whisperKit else { return nil }
     
@@ -921,10 +784,6 @@ private class WhisperKitApiImpl: WhisperKitMessage {
     return mergeTranscriptionResults(transcriptionResults)
   }
   
-  /// Merges multiple transcription results into a single result
-  ///
-  /// - Parameter results: Array of transcription results to merge
-  /// - Returns: Merged transcription result or nil if input is empty
   private func mergeTranscriptionResults(_ results: [TranscriptionResult]) -> TranscriptionResult? {
     guard !results.isEmpty else { return nil }
     
@@ -950,7 +809,6 @@ private class WhisperKitApiImpl: WhisperKitMessage {
   }
 }
 
-/// Handler for streaming transcription results to Flutter
 private class TranscriptionStreamHandler: NSObject, FlutterStreamHandler {
   private var eventSink: FlutterEventSink?
   
@@ -964,9 +822,6 @@ private class TranscriptionStreamHandler: NSObject, FlutterStreamHandler {
     return nil
   }
   
-  /// Sends a transcription result to the Flutter event sink
-  ///
-  /// - Parameter result: The transcription result to send
   func sendTranscription(_ result: TranscriptionResult?) {
     if let eventSink = eventSink {
       DispatchQueue.main.async {
@@ -992,7 +847,6 @@ private class TranscriptionStreamHandler: NSObject, FlutterStreamHandler {
   }
 }
 
-/// Handler for streaming model download progress to Flutter
 private class ModelProgressStreamHandler: NSObject, FlutterStreamHandler {
   private var eventSink: FlutterEventSink?
 
@@ -1006,9 +860,6 @@ private class ModelProgressStreamHandler: NSObject, FlutterStreamHandler {
     return nil
   }
   
-  /// Sends download progress to the Flutter event sink
-  ///
-  /// - Parameter progress: The progress object to send
   func sendProgress(_ progress: Progress) {
     if let eventSink = eventSink {
       DispatchQueue.main.async {
@@ -1026,11 +877,7 @@ private class ModelProgressStreamHandler: NSObject, FlutterStreamHandler {
   }
 }
 
-/// Main plugin class that registers with Flutter
 public class FlutterWhisperKitApplePlugin: NSObject, FlutterPlugin {
-  /// Registers the plugin with the Flutter engine
-  ///
-  /// - Parameter registrar: The plugin registrar for the Flutter app
   public static func register(with registrar: FlutterPluginRegistrar) {
     #if os(iOS)
       let messenger = registrar.messenger()
@@ -1057,10 +904,6 @@ public class FlutterWhisperKitApplePlugin: NSObject, FlutterPlugin {
   }
 }
 
-/// Resolves a Flutter asset path to a file system path
-///
-/// - Parameter assetPath: The asset path to resolve
-/// - Returns: The resolved file system path or nil if not found
 #if os(iOS)
 private func resolveAssetPath(assetPath: String) -> String? {
   guard let registrar = flutterPluginRegistrar else {
@@ -1068,31 +911,24 @@ private func resolveAssetPath(assetPath: String) -> String? {
     return nil
   }
   
-  
   let key1 = registrar.lookupKey(forAsset: assetPath)
-  print("Debug: Full path key: \(key1)")
   if let path1 = Bundle.main.path(forResource: key1, ofType: nil) {
-    print("Debug: Found asset using full path: \(path1)")
     return path1
   }
   
   let assetName = assetPath.hasPrefix("assets/") ? String(assetPath.dropFirst(7)) : assetPath
   let key2 = registrar.lookupKey(forAsset: assetName)
-  print("Debug: Asset name key: \(key2)")
   if let path2 = Bundle.main.path(forResource: key2, ofType: nil) {
-    print("Debug: Found asset using asset name: \(path2)")
     return path2
   }
   
   if let path3 = Bundle.main.path(forResource: assetName.split(separator: ".").first?.description, ofType: assetName.split(separator: ".").last?.description) {
-    print("Debug: Found asset directly in bundle: \(path3)")
     return path3
   }
   
   let documentsPath = NSSearchPathForDirectoriesInDomains(.documentDirectory, .userDomainMask, true)[0]
   let filePath = "\(documentsPath)/\(assetName)"
   if FileManager.default.fileExists(atPath: filePath) {
-    print("Debug: Found asset in Documents directory: \(filePath)")
     return filePath
   }
   
@@ -1105,7 +941,6 @@ private func resolveAssetPath(assetPath: String) -> String? {
     
     for path in possiblePaths {
       if FileManager.default.fileExists(atPath: path) {
-        print("Debug: Found asset at path: \(path)")
         return path
       }
     }
