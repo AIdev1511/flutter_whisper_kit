@@ -22,7 +22,7 @@ iOS and macOS implementation of the flutter_whisper_kit plugin, providing on-dev
   # see https://developer.apple.com/documentation/bundleresources/privacy_manifest_files
   # s.resource_bundles = {'flutter_whisperkit_apple_privacy' => ['flutter_whisper_kit_apple/Sources/flutter_whisper_kit_apple/PrivacyInfo.xcprivacy']}
 
-  s.dependency 'Flutter'
+  s.dependency 'FlutterMacOS'
   s.platform = :ios, '16.0'
 
   s.dependency 'FlutterMacOS'
